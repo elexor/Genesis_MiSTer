@@ -1,17 +1,17 @@
 --------------------------------------------------------------------------------
 -- AVALON SCALER
 --------------------------------------------------------------------------------
--- TEMLIB 10/2018
+-- O.DANET 2020
 --------------------------------------------------------------------------------
 -- This code can be freely distributed and used for any purpose, but, if you
 -- find any bug, or want to suggest an enhancement, you ought to send a mail
 -- to info@temlib.org.
 --------------------------------------------------------------------------------
 
--- Features :
+-- Features
 --  - Arbitrary output video format
 --  - Autodetect input image size or fixed window
---  - Progressive and interlaced input
+--  - Progressive and interlaced input and output
 --  - Interpolation
 --    Upscaling   : Nearest, Bilinear, Sharp Bilinear, Bicubic, Polyphase
 --    Downscaling : Nearest, Bilinear
@@ -24,13 +24,13 @@
 -- - Horizontal and vertical up-/down-scaling are independant.
 -- - Downscaling, H and/or V, supports only nearest-neighbour and bilinear
 --   filtering.
--- - For interlaced video, when the vertical size is lower than a deinterlaced
+-- - For interlaced input, when the vertical size is lower than a deinterlaced
 --   frame size (2x half-frame), the scaler processes only half-frames
 --   and upscales (when the output size is between 1x an 2x) or downscales (size
 --   below 1x) them.
 
 --------------------------------------------
--- 5 clock domains :
+-- 5 clock domains
 --  i_xxx    : Input video
 --  o_xxx    : Output video
 --  avl_xxx  : Avalon memory bus
@@ -54,10 +54,9 @@
 --  1    : Pixel format
 --         0 : 16 bits/pixel, RGB : RRRRRGGGGGGBBBBB
 --         1 : 24 bits/pixel, RGB
---         2 : 32 bits/pixels RGB0
-
+--         2 : 32 bits/pixel, RGB0
 --  3:2  : Header size : Offset to start of picture (= N_BURST). 12 bits
---  5:4  : Attributes. TBD
+--  5:4  : Attributes
 --         b0 ; Interlaced
 --         b1 : Field number
 --         b2 : Horizontal downscaled
@@ -83,7 +82,7 @@ USE ieee.numeric_std.ALL;
 -- 100 : Polyphase
 -- 101 : TBD
 -- 110 : TBD
--- 111 : TEST
+-- 111 : TBD
 
 -- MODE[3]
 -- 0 : Direct. Single framebuffer.
@@ -93,12 +92,12 @@ USE ieee.numeric_std.ALL;
 
 -- MASK      : Enable / Disable selected interpoler
 --             0:Nearest 1:Bilinear 2:SharpBilinear 3:Bicubic 4:Polyphase
--- RAMBASE   : RAM base address for framebuffer
+-- RAMBASE   : RAM base address for scaler framebuffer (storing input image)
 -- RAMSIZE   : RAM allocated for one framebuffer (needs x3 if triple-buffering)
 --             Must be a power of two
 -- INTER     : True=Autodetect interlaced video False=Force progressive scan
 -- HEADER    : True=Add image properties header
--- PALETTE   : Enable palette for framebuffer -8bpp mode
+-- PALETTE   : Enable palette for framebuffer 8bpp mode
 -- DOWNSCALE : True=Support downscaling False=Downscaling disabled
 -- BYTESWAP  : Little/Big endian byte swap
 -- FRAC      : Fractional bits, subpixel resolution
@@ -147,13 +146,13 @@ ENTITY ascal IS
     o_b   : OUT unsigned(7 DOWNTO 0);
     o_hs  : OUT std_logic; -- H sync
     o_vs  : OUT std_logic; -- V sync
+    o_fl  : OUT std_logic; -- Interaced field
     o_de  : OUT std_logic; -- Display Enable
-    o_vbl : OUT std_logic; -- V blank
     o_ce  : IN  std_logic; -- Clock Enable
     o_clk : IN  std_logic; -- Output clock
     
     -- Border colour R G B
-    o_border   : IN unsigned(23 DOWNTO 0) := x"000000";
+    o_border    : IN unsigned(23 DOWNTO 0) := x"000000";
     
     ------------------------------------
     -- Framebuffer mode
@@ -162,14 +161,13 @@ ENTITY ascal IS
     o_fb_vsize  : IN natural RANGE 0 TO 4095 :=0;
     o_fb_format : IN unsigned(5 DOWNTO 0) :="000100";
     o_fb_base   : IN unsigned(31 DOWNTO 0) :=x"0000_0000";
-    o_fb_stride : IN unsigned(13 DOWNTO 0) :=(OTHERS =>'0'); -- must be multiple of data bus width in bytes (8 or 16)
 
     -- Framebuffer palette in 8bpp mode
     pal_clk : IN std_logic :='0';
     pal_dw  : IN  unsigned(47 DOWNTO 0) :=x"000000000000"; -- R1 G1 B1 R0 G0 B0
     pal_dr  : OUT unsigned(47 DOWNTO 0) :=x"000000000000";
     pal_a   : IN  unsigned(6 DOWNTO 0)  :="0000000"; -- Colour index/2
-    pal_wr  : IN  std_logic :='0';
+    pal_wr  : IN  unsigned(1 DOWNTO 0)  :="00";
     
     ------------------------------------
     -- Low lag PLL tuning
@@ -177,11 +175,15 @@ ENTITY ascal IS
     
     ------------------------------------
     -- Input video parameters
-    iauto : IN std_logic; -- 1=Autodetect image size 0=Choose window
-    himin : IN natural RANGE 0 TO 4095; -- MIN < MAX, MIN >=0, MAX < DISP
-    himax : IN natural RANGE 0 TO 4095;
-    vimin : IN natural RANGE 0 TO 4095;
-    vimax : IN natural RANGE 0 TO 4095;
+    iauto : IN std_logic :='1'; -- 1=Autodetect image size 0=Choose window
+    himin : IN natural RANGE 0 TO 4095 :=0; -- MIN < MAX, MIN >=0, MAX < DISP
+    himax : IN natural RANGE 0 TO 4095 :=0;
+    vimin : IN natural RANGE 0 TO 4095 :=0;
+    vimax : IN natural RANGE 0 TO 4095 :=0;
+    
+    -- Detected input image size
+    i_hdmax : OUT natural RANGE 0 TO 4095;
+    i_vdmax : OUT natural RANGE 0 TO 4095;
     
     -- Output video parameters
     run    : IN std_logic :='1'; -- 1=Enable output image. 0=No image
@@ -189,7 +191,7 @@ ENTITY ascal IS
     mode   : IN unsigned(4 DOWNTO 0);
     -- SYNC  |_________________________/"""""""""\_______|
     -- DE    |""""""""""""""""""\________________________|
-    -- RGB   |    <#IMAGE#>     ^HDISP                   |
+    -- RGB   |    <#IMAGE#>      ^HDISP                  |
     --            ^HMIN   ^HMAX        ^HSSTART  ^HSEND  ^HTOTAL
     htotal  : IN natural RANGE 0 TO 4095;
     hsstart : IN natural RANGE 0 TO 4095;
@@ -203,6 +205,9 @@ ENTITY ascal IS
     vdisp   : IN natural RANGE 0 TO 4095;
     vmin    : IN natural RANGE 0 TO 4095;
     vmax    : IN natural RANGE 0 TO 4095; -- 0 <= vmin < vmax < vdisp
+    
+    ointer  : IN std_logic :='0'; -- Interlaced output select
+    -- Interlaced output : Total number of lines is 2*vtotal + 1
     
     -- Scaler format. 00=16bpp 565, 01=24bpp 10=32bpp
     format  : IN unsigned(1 DOWNTO 0) :="01";
@@ -284,12 +289,13 @@ ARCHITECTURE rtl OF ascal IS
   
   SUBTYPE uint12 IS natural RANGE 0 TO 4095;
   SUBTYPE uint13 IS natural RANGE 0 TO 8191;
+  SUBTYPE uint15 IS natural RANGE 0 TO 32767;
   
-  TYPE arr_uv48 IS ARRAY (natural RANGE <>) OF unsigned(47 DOWNTO 0);
+  TYPE arr_uv24 IS ARRAY (natural RANGE <>) OF unsigned(23 DOWNTO 0);
   TYPE arr_uv36 IS ARRAY (natural RANGE <>) OF unsigned(35 DOWNTO 0);
   TYPE arr_int9 IS ARRAY (natural RANGE <>) OF integer RANGE -256 TO 255;
   TYPE arr_uint12 IS ARRAY (natural RANGE <>) OF uint12;
-
+  
   ----------------------------------------------------------
   -- Input image
   SIGNAL i_pvs,i_pfl,i_pde,i_pce : std_logic;
@@ -387,12 +393,11 @@ ARCHITECTURE rtl OF ascal IS
   SIGNAL o_run : std_logic;
   SIGNAL o_mode,o_hmode,o_vmode : unsigned(4 DOWNTO 0);
   SIGNAL o_format : unsigned(5 DOWNTO 0);
-  SIGNAL o_fb_pal_dr : unsigned(23 DOWNTO 0);
-  SIGNAL o_fb_pal_dr_x2 : unsigned(47 DOWNTO 0);
+  SIGNAL o_fb_pal_dr,o_fb_pal_dr_lo,o_fb_pal_dr_hi : unsigned(23 DOWNTO 0);
   SIGNAL pal_idx: unsigned(7 DOWNTO 0);
   SIGNAL pal_idx_lsb: std_logic;
-  SIGNAL pal_mem : arr_uv48(0 TO 127);
-  ATTRIBUTE ramstyle of pal_mem : signal is "no_rw_check";
+  SIGNAL pal_mem_lo,pal_mem_hi : arr_uv24(0 TO 127);
+  ATTRIBUTE ramstyle of pal_mem_lo,pal_mem_hi : SIGNAL IS "no_rw_check";
   SIGNAL o_htotal,o_hsstart,o_hsend : uint12;
   SIGNAL o_hmin,o_hmax,o_hdisp : uint12;
   SIGNAL o_hsize,o_vsize : uint12;
@@ -400,7 +405,7 @@ ARCHITECTURE rtl OF ascal IS
   SIGNAL o_vmin,o_vmax,o_vdisp : uint12;
   SIGNAL o_divcpt : natural RANGE 0 TO 36;
   SIGNAL o_iendframe0,o_iendframe02,o_iendframe1,o_iendframe12 : std_logic;
-  SIGNAL o_bufup0,o_bufup1,o_inter : std_logic;
+  SIGNAL o_bufup0,o_bufup1,o_iinter : std_logic;
   SIGNAL o_ibuf0,o_ibuf1,o_obuf0,o_obuf1 : natural RANGE 0 TO 2;
   TYPE type_o_state IS (sDISP,sHSYNC,sREAD,sWAITREAD);
   SIGNAL o_state : type_o_state;
@@ -408,8 +413,7 @@ ARCHITECTURE rtl OF ascal IS
   SIGNAL o_readdataack,o_readdataack_sync,o_readdataack_sync2 : std_logic;
   SIGNAL o_copyv : unsigned(0 TO 8);
   SIGNAL o_adrs : unsigned(31 DOWNTO 0); -- Avalon address
-  SIGNAL o_adrs_pre : natural RANGE 0 TO 8388607;
-  SIGNAL o_stride : unsigned(13 DOWNTO 0);
+  SIGNAL o_adrs_pre : natural RANGE 0 TO 32*4096-1;
   SIGNAL o_adrsa,o_rline : std_logic;
   SIGNAL o_ad,o_ad1,o_ad2,o_ad3 : natural RANGE 0 TO 2*BLEN-1;
   SIGNAL o_adturn : std_logic;
@@ -429,12 +433,14 @@ ARCHITECTURE rtl OF ascal IS
   SIGNAL o_wr : unsigned(3 DOWNTO 0);
   SIGNAL o_hcpt,o_vcpt,o_vcpt_pre,o_vcpt_pre2,o_vcpt_pre3 : uint12;
   SIGNAL o_ihsize,o_ivsize : uint12;
-  SIGNAL o_ihsize_temp, o_ihsize_temp2 : natural RANGE 0 TO 32767;
-
+  SIGNAL o_ihsize_temp, o_ihsize_temp2 : uint15;
+  
   SIGNAL o_vfrac,o_hfrac,o_hfrac1,o_hfrac2,o_hfrac3,o_hfrac4 : unsigned(11 DOWNTO 0);
   SIGNAL o_hacc,o_hacc_ini,o_hacc_next,o_vacc,o_vacc_next,o_vacc_ini : natural RANGE 0 TO 4*OHRES-1;
-  SIGNAL o_hsv,o_vsv,o_dev,o_pev,o_end : unsigned(0 TO 5);
-  SIGNAL o_hsp,o_vss : std_logic;
+  SIGNAL o_hsv,o_vsv,o_dev,o_pev,o_flv : unsigned(0 TO 5);
+  SIGNAL o_hsp,o_vss,o_vs0,o_vs1 : std_logic;
+  SIGNAL o_interinc : natural RANGE 0 TO 2;
+  SIGNAL o_half,o_fli,o_inter : std_logic :='0';
   SIGNAL o_read,o_read_pre : std_logic;
   SIGNAL o_readlev,o_copylev : natural RANGE 0 TO 2;
   SIGNAL o_hburst,o_hbcpt : natural RANGE 0 TO 31;
@@ -1074,9 +1080,16 @@ BEGIN
           i_hmin<=himin; -- <ASYNC>
           i_hmax<=himax; -- <ASYNC>
           i_vmin<=vimin; -- <ASYNC>
-          i_vmax<=vimax; -- <ASYNC>
+          IF i_pvs='1' AND i_vs_pre='0' AND (i_inter='0' OR i_pfl='0') THEN
+            i_vmax<=vimax; -- <ASYNC>
+          END IF;
         END IF;
-
+        
+        IF i_pvs='1' AND i_vs_pre='0' AND (i_inter='0' OR i_pfl='0') THEN
+          i_vdmax<=i_vimax;
+        END IF;
+        i_hdmax<=i_himax;
+        
         IF i_format="00" OR i_format="11" THEN -- 16bpp
           i_hburst<=(i_hrsize*2 + N_BURST - 1) / N_BURST;
         ELSIF i_format="01" THEN -- 24bpp
@@ -1381,6 +1394,7 @@ BEGIN
   i_hrsize<=i_hsize WHEN i_hdown='0' ELSE i_ohsize;
   i_vrsize<=i_vsize WHEN i_vdown='0' ELSE i_ovsize;
   
+  
   -----------------------------------------------------------------------------
   -- Input Divider. For downscaling.
   -- Vfrac = IVacc / IVsize 12 / 12 --> 12
@@ -1479,14 +1493,14 @@ BEGIN
       avl_rline <=o_rline; -- <ASYNC>
       
       --------------------------------------------
-      avl_o_vs_sync<=o_vsv(0); -- <ASYNC>
+      avl_o_vs_sync<=o_vs0; -- <ASYNC>
       avl_o_vs<=avl_o_vs_sync;
       
       avl_fb_ena<=o_fb_ena; -- <ASYNC>
       IF avl_fb_ena='0' THEN
         IF HEADER THEN
-          avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE) + N_BURST;  -- <ASYNC>
-          avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE) + N_BURST;  -- <ASYNC>
+          avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE) + N_BURST; -- <ASYNC>
+          avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE) + N_BURST; -- <ASYNC>
         ELSE
           avl_o_offset0<=buf_offset(o_obuf0,RAMBASE,RAMSIZE);  -- <ASYNC>
           avl_o_offset1<=buf_offset(o_obuf1,RAMBASE,RAMSIZE);  -- <ASYNC>
@@ -1575,7 +1589,7 @@ BEGIN
           avl_readdataack<=NOT avl_readdataack;
         END IF;
       END IF;
-
+      
       IF avl_o_vs_sync='0' AND avl_o_vs='1' THEN
         avl_wad<=2*BLEN-1;
       END IF;
@@ -1673,6 +1687,7 @@ BEGIN
       o_hdisp  <=hdisp; -- <ASYNC> ?
       o_hmin   <=hmin; -- <ASYNC> ?
       o_hmax   <=hmax; -- <ASYNC> ?
+      o_inter  <=ointer;
       
       o_vtotal <=vtotal; -- <ASYNC> ?
       o_vsstart<=vsstart; -- <ASYNC> ?
@@ -1682,13 +1697,17 @@ BEGIN
       o_vmax   <=vmax; -- <ASYNC> ?
       
       o_hsize  <=o_hmax - o_hmin + 1;
-      o_vsize  <=o_vmax - o_vmin + 1;
+      IF o_inter='0' THEN
+        o_vsize  <=o_vmax - o_vmin + 1;
+      ELSE
+        o_vsize  <=(o_vmax - o_vmin + 1) * 2;
+      END IF;
       
       --------------------------------------------
       -- Triple buffering.
       -- For intelaced video, half frames are updated independently
       -- Input : Toggle buffer at end of input frame
-      o_inter  <=i_inter; -- <ASYNC>
+      o_iinter<=i_inter; -- <ASYNC>
       o_iendframe0<=i_endframe0; -- <ASYNC>
       o_iendframe02<=o_iendframe0;
       IF o_iendframe0='1' AND o_iendframe02='0' THEN
@@ -1702,7 +1721,7 @@ BEGIN
         o_bufup1<='1';
       END IF;
       -- Output : Change framebuffer, and image properties, at VS falling edge
-      IF o_vsv(1)='1' AND o_vsv(0)='0' AND o_bufup1='1' THEN
+      IF o_vs1='1' AND o_vs0='0' AND o_bufup1='1' THEN
         o_obuf1<=buf_next(o_obuf1,o_ibuf1);
         o_bufup1<='0';
         o_ihsize<=i_hrsize; -- <ASYNC>
@@ -1710,6 +1729,7 @@ BEGIN
         o_hdown<=i_hdown; -- <ASYNC>
         o_vdown<=i_vdown; -- <ASYNC>
       END IF;
+      
       -- Framebuffer mode.
       IF o_fb_ena='1' THEN
         o_ihsize<=o_fb_hsize;
@@ -1720,21 +1740,13 @@ BEGIN
       o_ihsize_temp <= o_ihsize * to_integer(o_format(2 DOWNTO 0) - 2);
       o_ihsize_temp2 <= (o_ihsize_temp + N_BURST - 1);
       o_hburst <= o_ihsize_temp2 / N_BURST;
-
-      IF o_fb_ena='1' and o_fb_stride /= 0 THEN
-        o_stride<=o_fb_stride;
-        o_stride(NB_LA-1 downto 0)<=(OTHERS=>'0');
-      ELSE
-        o_stride <= to_unsigned(o_ihsize_temp2,14);
-        o_stride(NB_BURST-1 DOWNTO 0) <= (OTHERS =>'0');
-      END IF;
       
-      IF o_vsv(1)='1' AND o_vsv(0)='0' AND o_bufup0='1' THEN
+      IF o_vs1='1' AND o_vs0='0' AND o_bufup0='1' THEN
         o_obuf0<=buf_next(o_obuf0,o_ibuf0);
         o_bufup0<='0';
       END IF;
       
-      IF o_inter='0' THEN
+      IF o_iinter='0' THEN
         o_ibuf1<=o_ibuf0;
         o_obuf1<=o_obuf0;
       END IF;
@@ -1777,8 +1789,8 @@ BEGIN
       -- acpt : Pixel position within current data word
       -- dcpt : Destination image position
       
-      -- Force preload 2 lines at top of screen
       IF o_hsv(0)='1' AND o_hsv(1)='0' THEN
+        -- Force preload 2 lines at top of screen
         IF o_vcpt_pre3=o_vmin THEN
           o_fload<=2;
           o_bibu<='0';
@@ -1789,19 +1801,24 @@ BEGIN
       o_vpe<=to_std_logic(o_vcpt_pre<o_vmax AND o_vcpt_pre>=o_vmin);
       o_divstart<='0';
       o_adrsa<='0';
-
+      
       o_vacc_ini<=(o_vsize - o_ivsize + 8192) MOD 8192;
       o_hacc_ini<=(o_hsize + o_ihsize + 8192) MOD 8192;
       
+      -- Alternate phase
       --o_vacc_ini<=o_ivsize;
       --o_hacc_ini<=(2*o_hsize - o_ihsize + 8192) MOD 8192;
-
+      
       CASE o_state IS
           --------------------------------------------------
         WHEN sDISP =>
           IF o_hsp='1' THEN
             o_state<=sHSYNC;
             o_hsp<='0';
+            o_interinc<=1; -- Two turns if interlaced output
+            IF o_vcpt_pre3=o_vmin AND o_fli='1' THEN
+              o_interinc<=2; -- Three if first line of second field
+            END IF;
           END IF;
           
           --------------------------------------------------
@@ -1816,14 +1833,14 @@ BEGIN
             o_vacc_next<=(dif_v + 2*o_ivsize + 8192) MOD 8192;
             vcarry_v:=true;
           END IF;
-          o_divstart<='1';
-          IF o_vcpt_pre2=o_vmin THEN --pe='0' THEN
+          o_divstart<=NOT o_inter OR to_std_logic(o_interinc=0);
+          IF o_vcpt_pre2=o_vmin THEN
             o_vacc     <=o_vacc_ini;
             o_vacc_next<=o_vacc_ini + 2*o_ivsize;
             o_vacpt<=x"001";
             vcarry_v:=false;
           END IF;
-
+          
           IF vcarry_v THEN
             o_vacpt<=o_vacpt+1;
           END IF;
@@ -1831,7 +1848,13 @@ BEGIN
           IF (o_vpe='1' AND vcarry_v) OR o_fload>0 THEN
             o_state<=sREAD;
           ELSE
-            o_state<=sDISP;
+            IF o_inter='1' AND o_interinc>0 THEN
+              -- If interlaced, increment vertical position twice
+              o_interinc<=o_interinc-1;
+              o_state<=sHSYNC;
+            ELSE
+              o_state<=sDISP;
+            END IF;
           END IF;
           
         WHEN sREAD =>
@@ -1854,9 +1877,15 @@ BEGIN
               -- If not finshed line, read more
               o_state<=sREAD;
             ELSE
-              o_state<=sDISP;
-              IF o_fload>=1 THEN
-                o_fload<=o_fload-1;
+              IF o_inter='1' AND o_interinc>0 THEN
+                -- If interlaced, increment vertical position twice
+                o_interinc<=o_interinc-1;
+                o_state<=sHSYNC;
+              ELSE
+                o_state<=sDISP;
+                IF o_fload>=1 THEN
+                  o_fload<=o_fload-1;
+                END IF;
               END IF;
             END IF;
           END IF;
@@ -1866,17 +1895,17 @@ BEGIN
       
       o_read<=o_read_pre AND o_run;
       
-      o_adrs_pre<=to_integer(o_vacpt) * to_integer(o_stride);
-      o_rline<=o_vacpt(0); -- Even/Odd line for interlaced video
+      o_adrs_pre<=to_integer(o_vacpt) * o_hburst;
+      o_rline<=o_vacpt(0); -- Even/Odd line for interlaced input
       IF o_adrsa='1' THEN
         IF o_fload=2 THEN
           o_adrs<=to_unsigned(o_hbcpt * N_BURST,32);
           o_alt<="1111";
         ELSIF o_fload=1 THEN
-          o_adrs<=to_unsigned(o_hbcpt * N_BURST,32) + o_stride;
+          o_adrs<=to_unsigned((o_hburst + o_hbcpt) * N_BURST,32);
           o_alt<="0100";
         ELSE
-          o_adrs<=to_unsigned(o_adrs_pre + (o_hbcpt * N_BURST),32);
+          o_adrs<=to_unsigned((o_adrs_pre + o_hbcpt) * N_BURST,32);
           o_alt<=altx(o_vacpt(1 DOWNTO 0) + 1);
         END IF;
       END IF;
@@ -2054,17 +2083,29 @@ BEGIN
     Tempera:PROCESS(pal_clk) IS
     BEGIN
       IF rising_edge(pal_clk) THEN
-        IF pal_wr='1' THEN
-          pal_mem(to_integer(pal_a))<=pal_dw;
+        IF pal_wr(0)='1' THEN
+          pal_mem_lo(to_integer(pal_a))<=pal_dw(23 DOWNTO 0);
         END IF;
-        pal_dr<=pal_mem(to_integer(pal_a));
+        pal_dr(23 DOWNTO 0)<=pal_mem_lo(to_integer(pal_a));
+        
+        IF pal_wr(1)='1' THEN
+          pal_mem_hi(to_integer(pal_a))<=pal_dw(47 DOWNTO 24);
+        END IF;
+        pal_dr(47 DOWNTO 24)<=pal_mem_hi(to_integer(pal_a));
+        
       END IF;
     END PROCESS;
-
-    pal_idx <= shift_opack(o_acpt4,o_shift,o_dr,o_format)(0 TO 7);
-    pal_idx_lsb <= pal_idx(0) WHEN rising_edge(o_clk);
-    o_fb_pal_dr_x2 <= pal_mem(to_integer(pal_idx(7 DOWNTO 1))) WHEN rising_edge(o_clk);
-    o_fb_pal_dr <= o_fb_pal_dr_x2(47 DOWNTO 24) WHEN pal_idx_lsb = '1' ELSE o_fb_pal_dr_x2(23 DOWNTO 0);
+    
+    pal_idx<=shift_opack(o_acpt4,o_shift,o_dr,o_format)(0 TO 7);
+    pal_idx_lsb<=pal_idx(0) WHEN rising_edge(o_clk);
+    
+    o_fb_pal_dr_lo<=pal_mem_lo(to_integer(pal_idx(7 DOWNTO 1)))
+                     WHEN rising_edge(o_clk);
+    o_fb_pal_dr_hi<=pal_mem_hi(to_integer(pal_idx(7 DOWNTO 1)))
+                     WHEN rising_edge(o_clk);
+    
+    o_fb_pal_dr<=o_fb_pal_dr_hi WHEN pal_idx_lsb='1' ELSE o_fb_pal_dr_lo;
+    
   END GENERATE GenPal;
   
   GenNoPal:IF NOT PALETTE GENERATE
@@ -2279,43 +2320,61 @@ BEGIN
   BEGIN
     IF rising_edge(o_clk) THEN
       IF o_ce='1' THEN
-        -- Output pixels count
         IF o_hcpt+1<o_htotal THEN
           o_hcpt<=(o_hcpt+1) MOD 4096;
         ELSE
           o_hcpt<=0;
-          IF o_vcpt_pre3+1>=o_vtotal THEN
+          IF (o_vcpt_pre3+1>=o_vtotal AND (o_fli='1' OR o_inter='0')) OR
+            (o_vcpt_pre3>=o_vtotal AND o_fli='0') THEN
             o_vcpt_pre3<=0;
+            o_half<='0';
+            o_fli<=o_fli XOR o_inter; -- Toggle interlaced field
           ELSE
             o_vcpt_pre3<=(o_vcpt_pre3+1) MOD 4096;
           END IF;
+          
           o_vcpt_pre2<=o_vcpt_pre3;
           o_vcpt_pre<=o_vcpt_pre2;
           o_vcpt<=o_vcpt_pre;
         END IF;
         
-        o_end(0)<=to_std_logic(o_vcpt>=o_vdisp);
         o_dev(0)<=to_std_logic(o_hcpt<o_hdisp AND o_vcpt<o_vdisp);
         o_pev(0)<=to_std_logic(o_hcpt>=o_hmin AND o_hcpt<=o_hmax AND
                                o_vcpt>=o_vmin AND o_vcpt<=o_vmax);
+        
+        
         o_hsv(0)<=to_std_logic(o_hcpt>=o_hsstart AND o_hcpt<o_hsend);
         o_vsv(0)<=to_std_logic((o_vcpt=o_vsstart AND o_hcpt>=o_hsstart) OR
                                (o_vcpt>o_vsstart AND o_vcpt<o_vsend) OR
                                (o_vcpt=o_vsend   AND o_hcpt<o_hsstart));
-
+        o_vs0<=to_std_logic((o_vcpt=o_vsstart AND o_hcpt>=o_hsstart) OR
+                            (o_vcpt>o_vsstart AND o_vcpt<o_vsend) OR
+                            (o_vcpt=o_vsend   AND o_hcpt<o_hsstart));
+        o_vs1<=o_vs0; -- Non-shifted VSYNC
+        
+        IF o_inter='1' THEN
+          IF o_fli='0' THEN
+            o_vsv(0)<=to_std_logic((o_vcpt=o_vsstart+1 AND
+                                    o_hcpt>=o_hsstart-o_htotal/2) OR
+                                   (o_vcpt>o_vsstart+1 AND o_vcpt<o_vsend+1) OR
+                                   (o_vcpt=o_vsend+1   AND
+                                    o_hcpt<o_hsstart-o_htotal/2));
+          END IF;
+        END IF;
+        o_flv(0)<=o_fli;
+        
         o_vss<=to_std_logic(o_vcpt_pre2>=o_vmin AND o_vcpt_pre2<=o_vmax);
         o_hsv(1 TO 5)<=o_hsv(0 TO 4);
         o_vsv(1 TO 5)<=o_vsv(0 TO 4);
         o_dev(1 TO 5)<=o_dev(0 TO 4);
         o_pev(1 TO 5)<=o_pev(0 TO 4);
-        o_end(1 TO 5)<=o_end(0 TO 4);
+        o_flv(1 TO 5)<=o_flv(0 TO 4);
         
         IF o_run='0' THEN
           o_hsv(2)<='0';
           o_vsv(2)<='0';
           o_dev(2)<='0';
           o_pev(2)<='0';
-          o_end(2)<='0';
         END IF;
         
       END IF;
@@ -2332,7 +2391,7 @@ BEGIN
       IF o_ce='1' THEN
         -- CYCLE 1 -----------------------------------------
         -- Read mem
-        o_radl<=(o_hcpt-o_hmin+OHRES) MOD OHRES;
+        o_radl<=(o_hcpt - o_hmin + OHRES) MOD OHRES;
         
         -- CYCLE 2 -----------------------------------------
         -- Lines reordering
@@ -2415,7 +2474,7 @@ BEGIN
         o_hs<=o_hsv(5);
         o_vs<=o_vsv(5);
         o_de<=o_dev(5);
-        o_vbl<=o_end(5);
+        o_fl<=o_flv(5);
         o_r<=x"00";
         o_g<=x"00";
         o_b<=x"00";

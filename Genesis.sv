@@ -42,6 +42,7 @@ module emu
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
 	output  [7:0] VIDEO_ARX,
 	output  [7:0] VIDEO_ARY,
+        output  [7:0] VIDEO_CROP,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -50,7 +51,7 @@ module emu
 	output        VGA_VS,
 	output        VGA_DE,    // = ~(VBlank | HBlank)
 	output        VGA_F1,
-	output [1:0]  VGA_SL,
+	output  [1:0] VGA_SL,
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -65,7 +66,6 @@ module emu
 	// b[0]: osd button
 	output  [1:0] BUTTONS,
 
-	input         CLK_AUDIO, // 24.576 MHz
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
 	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
@@ -159,6 +159,19 @@ always_comb begin
 	end
 end
 
+always_comb begin
+	case(status[50:48])
+		3'd0 : VIDEO_CROP = 8'd00;
+		3'd1 : VIDEO_CROP = 8'd01;
+		3'd2 : VIDEO_CROP = 8'd02;
+		3'd3 : VIDEO_CROP = 8'd03;
+		3'd4 : VIDEO_CROP = 8'd04;
+		3'd5 : VIDEO_CROP = 8'd05;
+		3'd6 : VIDEO_CROP = 8'd10;
+		3'd7 : VIDEO_CROP = 8'd20;
+	endcase
+end
+
 //assign VIDEO_ARX = status[10] ? 8'd16 : ((status[30] && wide_ar) ? 8'd10 : 8'd64);
 //assign VIDEO_ARY = status[10] ? 8'd9  : ((status[30] && wide_ar) ? 8'd7  : 8'd49);
 
@@ -175,7 +188,7 @@ assign LED_USER  = cart_download | sav_pending;
 // 0         1         2         3          4         5         6   
 // 01234567890123456789012345678901 23456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXX XXXXXXXXXXXXXXXXXXX XX XXXXXXXXXXXXX               
+// XXXXXXXXXXXX XXXXXXXXXXXXXXXXXXX XX XXXXXXXXXXXXXXX               
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -202,6 +215,7 @@ localparam CONF_STR = {
 	"P1-;",
 	"P1OT,Border,No,Yes;",
 	"P1oEF,Composite Blend,Off,On,Adaptive;",
+	"P1oGI,Crop,0,2,4,6,8,10,20,40;",
 	"P1-;",
 	"P1OEF,Audio Filter,Model 1,Model 2,Minimal,No Filter;",
 	"P1OB,FM Chip,YM2612,YM3438;",
@@ -783,8 +797,6 @@ always @(posedge clk_sys) begin
 	if(old_ready & ~cart_hdr_ready) region_set <= 0;
 end
 
-wire [3:0] hrgn = ioctl_data[3:0] - 4'd7;
-
 reg cart_hdr_ready = 0;
 reg hdr_j=0,hdr_u=0,hdr_e=0;
 always @(posedge clk_sys) begin
@@ -795,22 +807,15 @@ always @(posedge clk_sys) begin
 	if(old_download && ~cart_download) cart_hdr_ready <= 0;
 
 	if(ioctl_wr & cart_download) begin
-		if(ioctl_addr == 'h1F0) begin
+		if(ioctl_addr == 'h1F0 || ioctl_addr == 'h1F2) begin
 			if(ioctl_data[7:0] == "J") hdr_j <= 1;
 			else if(ioctl_data[7:0] == "U") hdr_u <= 1;
-			else if(ioctl_data[7:0] == "E") hdr_e <= 1;
-			else if(ioctl_data[7:0] >= "0" && ioctl_data[7:0] <= "9") {hdr_e, hdr_u, hdr_j} <= {ioctl_data[3], ioctl_data[2], ioctl_data[0]};
-			else if(ioctl_data[7:0] >= "A" && ioctl_data[7:0] <= "F") {hdr_e, hdr_u, hdr_j} <= {      hrgn[3],       hrgn[2],       hrgn[0]};
-		end
-		if(ioctl_addr == 'h1F2) begin
-			if(ioctl_data[7:0] == "J") hdr_j <= 1;
-			else if(ioctl_data[7:0] == "U") hdr_u <= 1;
-			else if(ioctl_data[7:0] == "E") hdr_e <= 1;
+			else if(ioctl_data[7:0] >= "0" && ioctl_data[7:0] <= "Z") hdr_e <= 1;
 		end
 		if(ioctl_addr == 'h1F0) begin
 			if(ioctl_data[15:8] == "J") hdr_j <= 1;
 			else if(ioctl_data[15:8] == "U") hdr_u <= 1;
-			else if(ioctl_data[15:8] == "E") hdr_e <= 1;
+			else if(ioctl_data[15:8] >= "0" && ioctl_data[7:0] <= "Z") hdr_e <= 1;
 		end
 		if(ioctl_addr == 'h200) cart_hdr_ready <= 1;
 	end
